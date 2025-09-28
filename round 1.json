@@ -1,0 +1,413 @@
+{
+  "name": "PS Agent (SSH to Windows Runner) - Generate → Lint → Test → Execute → Fix Loop",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "ManualTrigger_1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1260, -120]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            { "name": "idea", "value": "Create a local user if missing; add to 'Remote Desktop Users'; log to Event Log." }
+          ],
+          "number": [
+            { "name": "maxIterations", "value": 6 }
+          ],
+          "json": [
+            {
+              "name": "runArgs",
+              "value": {
+                "UserName": "HelpdeskOps",
+                "Description": "RDP account created by PS Agent",
+                "Verbose": true
+              }
+            }
+          ]
+        }
+      },
+      "id": "SetInput_2",
+      "name": "Set Input (idea, maxIterations, runArgs)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [-1040, -120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = this.getWorkflowStaticData('node');\n// Initialize persistent state (per execution)\ndata.idea = $json.idea;\ndata.runArgs = $json.runArgs || {};\ndata.workingDir = 'C:/Temp/n8n-agent';\ndata.iteration = 0;\ndata.done = false;\ndata.script = null;\ndata.tests = '';\ndata.lastReport = null;\ndata.maxIterations = $json.maxIterations || 5;\nreturn [{ json: { maxIterations: data.maxIterations } }];"
+      },
+      "id": "InitState_3",
+      "name": "Init State (static)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [-820, -120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const max = $json.maxIterations || 5;\nconst items = Array.from({length: max}, (_, i) => ({ json: { loop: i } }));\nreturn items;"
+      },
+      "id": "MakeLoop_4",
+      "name": "Make Iterations",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [-620, -120]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "id": "Split_5",
+      "name": "Split in Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [-420, -120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const s = this.getWorkflowStaticData('node');\nreturn [{ json: {\n  idea: s.idea,\n  runArgs: s.runArgs,\n  workingDir: s.workingDir,\n  iteration: s.iteration,\n  done: s.done,\n  maxIterations: s.maxIterations,\n  hasScript: !!s.script\n}}];"
+      },
+      "id": "LoadState_6",
+      "name": "Load State",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [-220, -120]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.hasScript}}"
+            }
+          ]
+        }
+      },
+      "id": "IfHasScript_7",
+      "name": "IF has script already?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [-20, -120]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "options": {
+          "timeout": 600000
+        },
+        "jsonParameters": true,
+        "sendBody": true,
+        "authentication": "none",
+        "headerParametersJson": "{\n  \"Authorization\": \"Bearer YOUR_OPENAI_API_KEY\",\n  \"Content-Type\": \"application/json\"\n}",
+        "bodyParametersJson": "={\n  \"model\": \"gpt-4o-mini\",\n  \"temperature\": 0.2,\n  \"response_format\": {\"type\": \"json_object\"},\n  \"messages\": [\n    {\"role\":\"system\",\"content\": \"You are a senior PowerShell engineer. Output strictly valid JSON with keys: spec, risks, script, tests. The script must be idempotent, use Set-StrictMode -Version Latest, [CmdletBinding()], param() with explicit types, no Write-Host (use Write-Verbose/Write-Information), $ErrorActionPreference='Stop', and comment-based help. Tests must be a full Pester file (*.Tests.ps1).\"},\n    {\"role\":\"user\",\"content\": \"Task idea: {{$json[\"idea\"]}}\\nConstraints: PowerShell 5.1+ and/or PowerShell 7; no third-party binaries. Return only valid JSON with fields spec, risks, script, tests.\"}\n  ]\n}"
+      },
+      "id": "HTTP_OpenAI_Gen_8",
+      "name": "HTTP Request (OpenAI → Generate)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-20, -340]
+    },
+    {
+      "parameters": {
+        "functionCode": "const content = $json.choices?.[0]?.message?.content || '';\nlet obj;\ntry { obj = JSON.parse(content); } catch (e) { throw new Error('OpenAI did not return valid JSON. Raw: ' + content.slice(0, 300)); }\nreturn [{ json: { spec: obj.spec, risks: obj.risks, script: obj.script, tests: obj.tests || '' } }];"
+      },
+      "id": "ParseGen_9",
+      "name": "Parse Generate JSON",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [200, -340]
+    },
+    {
+      "parameters": {
+        "functionCode": "const s = this.getWorkflowStaticData('node');\ns.script = $json.script;\ns.tests = $json.tests || '';\nreturn [{ json: { ok: true } }];"
+      },
+      "id": "SaveScript_10",
+      "name": "Save Script → static",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [400, -340]
+    },
+    {
+      "parameters": {
+        "functionCode": "const s = this.getWorkflowStaticData('node');\nconst script_b64 = Buffer.from(s.script, 'utf8').toString('base64');\nconst tests_b64 = Buffer.from(s.tests || '', 'utf8').toString('base64');\nconst args_b64 = Buffer.from(JSON.stringify(s.runArgs || {}), 'utf8').toString('base64');\nreturn [{ json: { workingDir: s.workingDir, script_b64, tests_b64, args_b64 } }];"
+      },
+      "id": "PrepSSH_11",
+      "name": "Prep for SSH (b64)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [600, -120]
+    },
+    {
+      "parameters": {
+        "command": "powershell -NoProfile -NonInteractive -Command \"$wd='{{$json[\"workingDir\"]}}'; New-Item -ItemType Directory -Path $wd -Force | Out-Null; $script=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{{$json[\"script_b64\"]}}')); Set-Content -LiteralPath ($wd+'\\script.ps1') -Value $script -Encoding UTF8; $tests=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{{$json[\"tests_b64\"]}}')); if ($tests.Length -gt 0) { Set-Content -LiteralPath ($wd+'\\tests.Tests.ps1') -Value $tests -Encoding UTF8 }; if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction SilentlyContinue }; if (-not (Get-Module -ListAvailable -Name Pester)) { Install-Module Pester -Scope CurrentUser -Force -ErrorAction SilentlyContinue }; $lint=@(); try{ $lint=Invoke-ScriptAnalyzer -Path ($wd+'\\script.ps1') -Severity Error,Warning | Select-Object RuleName,Severity,Message,Line,Column,ScriptName } catch {} ; $testResult=$null; try { $p=Invoke-Pester -Script ($wd+'\\tests.Tests.ps1') -PassThru -Show None -ErrorAction SilentlyContinue; $testResult=@{ Total=$p.TotalCount; Passed=$p.PassedCount; Failed=$p.FailedCount; Result=$p.Result; FailedTests=($p.TestResult | Where-Object Result -ne 'Passed' | Select-Object Describe,Context,Name,ErrorRecord,StackTrace) } } catch { $testResult=@{ Error=($_ | Out-String) } }; $argsJson=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{{$json[\"args_b64\"]}}')); $argsObj=@{}; try { $argsObj = ConvertFrom-Json -InputObject $argsJson } catch { $argsObj=@{} }; $ErrorActionPreference='Stop'; $exec=@{ ExitCode=$null; Stdout=''; Stderr=''; Errors=@() }; try { $out=& ($wd+'\\script.ps1') @argsObj | Out-String; $exec.ExitCode=0; $exec.Stdout=$out } catch { $exec.ExitCode=1; $exec.Stderr=($_ | Out-String); $exec.Errors=@([pscustomobject]@{ Exception=$_.Exception.Message; Category=$_.CategoryInfo.ToString(); FullyQualifiedErrorId=$_.FullyQualifiedErrorId; ScriptStackTrace=$_.ScriptStackTrace; TargetObject=($null + $_.TargetObject) }) } ; $report=[pscustomobject]@{ Host=$env:COMPUTERNAME; Pwsh=$PSVersionTable.PSVersion.ToString(); Lint=$lint; Tests=$testResult; Exec=$exec }; $report | ConvertTo-Json -Depth 6\""
+      },
+      "id": "SSH_Run_12",
+      "name": "SSH: Run on Windows runner",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [820, -120],
+      "notesInFlow": true,
+      "notes": "Select your SSH credential to the Windows runner.\nRunner should allow PowerShell + Install-Module or have PSScriptAnalyzer/Pester preinstalled."
+    },
+    {
+      "parameters": {
+        "functionCode": "const raw = ($json.stdout || '').trim();\nlet obj;\ntry { obj = JSON.parse(raw); } catch (e) { throw new Error('Runner did not return valid JSON. First 500 bytes: ' + raw.slice(0,500)); }\nconst lintCount = Array.isArray(obj.Lint) ? obj.Lint.length : 0;\nconst failed = obj.Tests && Number.isInteger(obj.Tests.Failed) ? obj.Tests.Failed : 0;\nconst exitCode = (obj.Exec && typeof obj.Exec.ExitCode !== 'undefined') ? obj.Exec.ExitCode : 1;\nreturn [{ json: { report: obj, lintCount, failed, exitCode } }];"
+      },
+      "id": "ParseRunner_13",
+      "name": "Parse runner JSON",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1040, -120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const s = this.getWorkflowStaticData('node');\ns.lastReport = $json.report;\nconst lintCount = $json.lintCount;\nconst failed = $json.failed;\nconst exitCode = $json.exitCode;\nconst clean = (lintCount === 0) && (failed === 0) && (exitCode === 0);\ns.done = clean;\ns.iteration = (s.iteration || 0) + 1;\nreturn [{ json: { iteration: s.iteration, done: s.done, maxIterations: s.maxIterations } }];"
+      },
+      "id": "SaveResults_14",
+      "name": "Save results → static",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1240, -120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const s = this.getWorkflowStaticData('node');\nreturn [{ json: { stopNow: (s.done === true) || (s.iteration >= s.maxIterations), iteration: s.iteration, done: s.done } }];"
+      },
+      "id": "EvalStop_15",
+      "name": "Eval stop condition",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1440, -120]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{$json.stopNow}}" }
+          ]
+        }
+      },
+      "id": "IfDone_16",
+      "name": "IF finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1640, -120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const s = this.getWorkflowStaticData('node');\nreturn [{ json: { script: s.script, tests: s.tests || '', report: s.lastReport, idea: s.idea } }];"
+      },
+      "id": "LoadFixCtx_17",
+      "name": "Load Fix Context",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [200, 120]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "options": {
+          "timeout": 600000
+        },
+        "jsonParameters": true,
+        "sendBody": true,
+        "authentication": "none",
+        "headerParametersJson": "{\n  \"Authorization\": \"Bearer YOUR_OPENAI_API_KEY\",\n  \"Content-Type\": \"application/json\"\n}",
+        "bodyParametersJson": "={\n  \"model\": \"gpt-4o-mini\",\n  \"temperature\": 0.2,\n  \"response_format\": {\"type\": \"json_object\"},\n  \"messages\": [\n    {\"role\":\"system\",\"content\": \"You fix PowerShell quickly and safely. Return strictly valid JSON with keys: script, tests. Rules: minimal changes; keep structure; remove PSScriptAnalyzer violations; make tests pass (or fix tests if wrong and explain in comments); maintain idempotence; no Write-Host; use Set-StrictMode -Version Latest and $ErrorActionPreference='Stop'.\"},\n    {\"role\":\"user\",\"content\": \"CURRENT SCRIPT:\\n<<<SCRIPT\\n{{$json[\"script\"]}}\\nSCRIPT\\n\\nTESTS FILE:\\n<<<TESTS\\n{{$json[\"tests\"]}}\\nTESTS\\n\\nFAILURE SIGNALS (JSON):\\n<<<REPORT\\n{{JSON.stringify($json[\"report\"])}}\\nREPORT\\n\\nTask idea: {{$json[\"idea\"]}}\\nReturn only valid JSON with fields: script, tests.\"}\n  ]\n}"
+      },
+      "id": "HTTP_OpenAI_Fix_18",
+      "name": "HTTP Request (OpenAI → Fix)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [420, 120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const content = $json.choices?.[0]?.message?.content || '';\nlet obj;\ntry { obj = JSON.parse(content); } catch (e) { throw new Error('OpenAI(Fix) did not return valid JSON. Raw: ' + content.slice(0, 300)); }\nreturn [{ json: { script: obj.script, tests: obj.tests || '' } }];"
+      },
+      "id": "ParseFix_19",
+      "name": "Parse Fix JSON",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [640, 120]
+    },
+    {
+      "parameters": {
+        "functionCode": "const s = this.getWorkflowStaticData('node');\ns.script = $json.script;\ns.tests = $json.tests || '';\nreturn [{ json: { ok: true } }];"
+      },
+      "id": "SaveScript2_20",
+      "name": "Save Script (fixed) → static",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [840, 120]
+    },
+    {
+      "parameters": {},
+      "id": "Done_21",
+      "name": "Done (end)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1840, -240],
+      "notesInFlow": true,
+      "notes": "Success path ends here. Add Slack/Email/Repo commit as needed."
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          { "node": "Set Input (idea, maxIterations, runArgs)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Set Input (idea, maxIterations, runArgs)": {
+      "main": [
+        [
+          { "node": "Init State (static)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Init State (static)": {
+      "main": [
+        [
+          { "node": "Make Iterations", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Make Iterations": {
+      "main": [
+        [
+          { "node": "Split in Batches", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Split in Batches": {
+      "main": [
+        [
+          { "node": "Load State", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Load State": {
+      "main": [
+        [
+          { "node": "IF has script already?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "IF has script already?": {
+      "main": [
+        [
+          { "node": "HTTP Request (OpenAI → Generate)", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Load Fix Context", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "HTTP Request (OpenAI → Generate)": {
+      "main": [
+        [
+          { "node": "Parse Generate JSON", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Generate JSON": {
+      "main": [
+        [
+          { "node": "Save Script → static", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Save Script → static": {
+      "main": [
+        [
+          { "node": "Prep for SSH (b64)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Load Fix Context": {
+      "main": [
+        [
+          { "node": "HTTP Request (OpenAI → Fix)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "HTTP Request (OpenAI → Fix)": {
+      "main": [
+        [
+          { "node": "Parse Fix JSON", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Fix JSON": {
+      "main": [
+        [
+          { "node": "Save Script (fixed) → static", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Save Script (fixed) → static": {
+      "main": [
+        [
+          { "node": "Prep for SSH (b64)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prep for SSH (b64)": {
+      "main": [
+        [
+          { "node": "SSH: Run on Windows runner", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "SSH: Run on Windows runner": {
+      "main": [
+        [
+          { "node": "Parse runner JSON", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse runner JSON": {
+      "main": [
+        [
+          { "node": "Save results → static", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Save results → static": {
+      "main": [
+        [
+          { "node": "Eval stop condition", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Eval stop condition": {
+      "main": [
+        [
+          { "node": "IF finished?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "IF finished?": {
+      "main": [
+        [
+          { "node": "Done (end)", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Split in Batches", "type": "main", "index": 1 }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetup": "Open the HTTP Request nodes and set Authorization header to your OpenAI API key; open the SSH node and pick your Runner SSH credential."
+  },
+  "active": false,
+  "version": 2
+}
