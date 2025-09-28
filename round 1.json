@@ -96,9 +96,6 @@
     {
       "parameters": {
         "url": "https://api.openai.com/v1/chat/completions",
-        "options": {
-          "timeout": 600000
-        },
         "jsonParameters": true,
         "sendBody": true,
         "authentication": "none",
@@ -210,9 +207,6 @@
     {
       "parameters": {
         "url": "https://api.openai.com/v1/chat/completions",
-        "options": {
-          "timeout": 600000
-        },
         "jsonParameters": true,
         "sendBody": true,
         "authentication": "none",
